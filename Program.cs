@@ -1,24 +1,8 @@
 using HoneyRaesAPI.Models;
 using HoneyRaesAPI.Models.DTOs;
+using Npgsql;
 
-List<Customer> customers = new List<Customer> { 
-    new Customer { Id = 1, Name = "John Doe", Address = "123 Main"},
-    new Customer { Id = 2, Name = "Jane Doe", Address = "123 Main"},
-    new Customer { Id = 3, Name = "Jim Doe", Address = "123 Main"},
-};
-
-List<Employee> employees = new List<Employee> { 
-    new Employee { Id = 1, Name = "Eve Adams", Specialty = "Plumbing" },
-    new Employee { Id = 2, Name = "Frank Baker", Specialty = "Electrical" }
-};
-
-List<ServiceTicket> serviceTickets = new List<ServiceTicket> { 
-    new ServiceTicket { Id = 1, CustomerId = 1, EmployeeId = 1, Description = "Leaking faucet", Emergency = false },
-    new ServiceTicket { Id = 2, CustomerId = 2, EmployeeId = 2, Description = "Power outage", Emergency = true, DateCompleted = DateTime.Now.AddDays(-1) },
-    new ServiceTicket { Id = 3, CustomerId = 3, Description = "Broken window", Emergency = false },
-    new ServiceTicket { Id = 4, CustomerId = 1, EmployeeId = 2, Description = "Heating issue", Emergency = true },
-    new ServiceTicket { Id = 5, CustomerId = 2, EmployeeId = 1, Description = "Air conditioning maintenance", Emergency = false, DateCompleted = DateTime.Now.AddDays(-2) }
-};
+var connectionString = "Host=localhost;Port=5432;Username=postgres;Password=root;Database=HoneyRaes";
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -35,59 +19,133 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-
-
-//Get Endpoints
-app.MapGet("/servicetickets", () =>
+app.MapGet("/servicetickets", async () =>
 {
-    return serviceTickets.Select(t => new ServiceTicketDTO
-    {
-        Id = t.Id,
-        CustomerId = t.CustomerId,
-        EmployeeId = t.EmployeeId,
-        Description = t.Description,
-        Emergency = t.Emergency,
-        DateCompleted = t.DateCompleted
-    });
-});
+    var serviceTickets = new List<ServiceTicket>();
 
-app.MapGet("/employees", () =>
-{
-    return employees.Select(e => new EmployeeDTO
-    {
-        Id = e.Id,
-        Name = e.Name,
-        Specialty = e.Specialty
-    }).ToList();
-});
+    using var connection = new NpgsqlConnection(connectionString);
+    await connection.OpenAsync();
 
-app.MapGet("/customers", () =>
-{
-    return customers.Select(c => new CustomerDTO
-    {
-        Id = c.Id,
-        Name = c.Name,
-        Address = c.Address
-    }).ToList();
-});
+    var query = "SELECT * FROM ServiceTicket";
+    using var command = new NpgsqlCommand(query, connection);
+    using var reader = await command.ExecuteReaderAsync();
 
-app.MapGet("/customers/{id}", (int id) =>
-{
-    var customer = customers.FirstOrDefault(c => c.Id == id);
-
-    if (customer == null)
+    while (await reader.ReadAsync())
     {
-        return Results.NotFound("Customer not found");
+        serviceTickets.Add(new ServiceTicket
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")),
+            CustomerId = reader.GetInt32(reader.GetOrdinal("CustomerId")),
+            EmployeeId = reader.IsDBNull(reader.GetOrdinal("EmployeeId")) ? null : reader.GetInt32(reader.GetOrdinal("EmployeeId")),
+            Description = reader.GetString(reader.GetOrdinal("Description")),
+            Emergency = reader.GetBoolean(reader.GetOrdinal("Emergency")),
+            DateCompleted = reader.IsDBNull(reader.GetOrdinal("DateCompleted")) ? null : reader.GetDateTime(reader.GetOrdinal("DateCompleted"))
+        });
     }
 
-    var tickets = serviceTickets.Where(st => st.CustomerId == id).ToList();
+    return serviceTickets;
+});
+
+app.MapGet("/employees", async () =>
+{
+    var employees = new List<Employee>();
+
+    using var connection = new NpgsqlConnection(connectionString);
+    await connection.OpenAsync();
+
+    var query = "SELECT * FROM Employee";
+    using var command = new NpgsqlCommand(query, connection);
+    using var reader = await command.ExecuteReaderAsync();
+
+    while (await reader.ReadAsync())
+    {
+        employees.Add(new Employee
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")),
+            Name = reader.GetString(reader.GetOrdinal("Name")),
+            Specialty = reader.GetString(reader.GetOrdinal("Specialty"))
+        });
+    }
+
+    return employees;
+});
+
+app.MapGet("/customers", async () =>
+{
+    var customers = new List<Customer>();
+
+    using var connection = new NpgsqlConnection(connectionString);
+    await connection.OpenAsync();
+
+    var query = "SELECT * FROM Customer";
+    using var command = new NpgsqlCommand(query, connection);
+    using var reader = await command.ExecuteReaderAsync();
+
+    while (await reader.ReadAsync())
+    {
+        customers.Add(new Customer
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")),
+            Name = reader.GetString(reader.GetOrdinal("Name")),
+            Address = reader.GetString(reader.GetOrdinal("Address"))
+        });
+    }
+
+    return customers;
+});
+
+app.MapGet("/customers/{id}", async (int id) =>
+{
+    using var connection = new NpgsqlConnection(connectionString);
+    await connection.OpenAsync();
+
+    Customer customer = null;
+    var customerQuery = "SELECT * FROM Customer WHERE Id = @Id";
+    using (var command = new NpgsqlCommand(customerQuery, connection))
+    {
+        command.Parameters.AddWithValue("Id", id);
+        using var reader = await command.ExecuteReaderAsync();
+
+        if (await reader.ReadAsync())
+        {
+            customer = new Customer
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                Name = reader.GetString(reader.GetOrdinal("Name")),
+                Address = reader.GetString(reader.GetOrdinal("Address"))
+            };
+        }
+    }
+
+    if (customer == null) return Results.NotFound();
+
+    var serviceTickets = new List<ServiceTicket>();
+    var ticketQuery = "SELECT * FROM ServiceTicket WHERE CustomerId = @CustomerId";
+    using (var command = new NpgsqlCommand(ticketQuery, connection))
+    {
+        command.Parameters.AddWithValue("CustomerId", id);
+        using var reader = await command.ExecuteReaderAsync();
+
+        while (await reader.ReadAsync())
+        {
+            serviceTickets.Add(new ServiceTicket
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                CustomerId = reader.GetInt32(reader.GetOrdinal("CustomerId")),
+                EmployeeId = reader.IsDBNull(reader.GetOrdinal("EmployeeId")) ? null : reader.GetInt32(reader.GetOrdinal("EmployeeId")),
+                Description = reader.GetString(reader.GetOrdinal("Description")),
+                Emergency = reader.GetBoolean(reader.GetOrdinal("Emergency")),
+                DateCompleted = reader.IsDBNull(reader.GetOrdinal("DateCompleted")) ? null : reader.GetDateTime(reader.GetOrdinal("DateCompleted"))
+            });
+        }
+    }
 
     return Results.Ok(new CustomerDTO
     {
         Id = customer.Id,
         Name = customer.Name,
         Address = customer.Address,
-        ServiceTickets = tickets.Select(t => new ServiceTicketDTO
+        ServiceTickets = serviceTickets.Select(t => new ServiceTicketDTO
         {
             Id = t.Id,
             CustomerId = t.CustomerId,
@@ -101,153 +159,122 @@ app.MapGet("/customers/{id}", (int id) =>
 
 app.MapGet("/employees/{id}", (int id) =>
 {
-    var employee = employees.FirstOrDefault(e => e.Id == id);
+    Employee employee = null;
 
-    if (employee == null)
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+        SELECT 
+            e.Id,
+            e.Name, 
+            e.Specialty, 
+            st.Id AS serviceTicketId, 
+            st.CustomerId,
+            st.Description,
+            st.Emergency,
+            st.DateCompleted 
+        FROM Employee e
+        LEFT JOIN ServiceTicket st ON st.EmployeeId = e.Id
+        WHERE e.Id = @id";
+    command.Parameters.AddWithValue("@id", id);
+
+    using NpgsqlDataReader reader = command.ExecuteReader();
+
+    while (reader.Read())
     {
-        return Results.NotFound("Employee not found");
+        if (employee == null)
+        {
+            employee = new Employee
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                Name = reader.GetString(reader.GetOrdinal("Name")),
+                Specialty = reader.GetString(reader.GetOrdinal("Specialty")),
+                ServiceTickets = new List<ServiceTicket>()
+            };
+        }
+
+        if (!reader.IsDBNull(reader.GetOrdinal("serviceTicketId")))
+        {
+            employee.ServiceTickets.Add(new ServiceTicket
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("serviceTicketId")),
+                CustomerId = reader.GetInt32(reader.GetOrdinal("CustomerId")),
+                EmployeeId = id,
+                Description = reader.GetString(reader.GetOrdinal("Description")),
+                Emergency = reader.GetBoolean(reader.GetOrdinal("Emergency")),
+                DateCompleted = reader.IsDBNull(reader.GetOrdinal("DateCompleted"))
+                                ? null
+                                : reader.GetDateTime(reader.GetOrdinal("DateCompleted"))
+            });
+        }
     }
 
-    var tickets = serviceTickets.Where(st => st.EmployeeId == id).ToList();
-
-    return Results.Ok(new EmployeeDTO
-    {
-        Id = employee.Id,
-        Name = employee.Name,
-        Specialty = employee.Specialty,
-        ServiceTickets = tickets.Select(t => new ServiceTicketDTO
-        {
-            Id = t.Id,
-            CustomerId = t.CustomerId,
-            EmployeeId = t.EmployeeId,
-            Description = t.Description,
-            Emergency = t.Emergency,
-            DateCompleted = t.DateCompleted
-        }).ToList()
-    });
-});
-
-app.MapGet("/servicetickets/{id}", (int id) =>
-{
-    var serviceTicket = serviceTickets.FirstOrDefault(st => st.Id == id);
-    
-    if (serviceTicket == null)
-    {
-        return Results.NotFound();
-    }
-
-    var employee = employees.FirstOrDefault(e => e.Id == serviceTicket.EmployeeId);
-    var customer = customers.FirstOrDefault(c => c.Id == serviceTicket.CustomerId);
-
-    return Results.Ok(new ServiceTicketDTO
-    {
-        Id = serviceTicket.Id,
-        CustomerId = serviceTicket.CustomerId,
-        Customer = customer == null ? null : new CustomerDTO
-        {
-            Id = customer.Id,
-            Name = customer.Name,
-            Address = customer.Address
-        },
-        EmployeeId = serviceTicket.EmployeeId,
-        Employee = employee == null ? null : new EmployeeDTO
-        {
-            Id = employee.Id,
-            Name = employee.Name,
-            Specialty = employee.Specialty
-        },
-        Description = serviceTicket.Description,
-        Emergency = serviceTicket.Emergency,
-        DateCompleted = serviceTicket.DateCompleted
-    });
+    return employee == null ? Results.NotFound() : Results.Ok(employee);
 });
 
 
-//Post Endpoints
-app.MapPost("/servicetickets", (ServiceTicket serviceTicket) =>
+//Post endpoints
+app.MapPost("/employees", (Employee employee) =>
 {
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+        INSERT INTO Employee (Name, Specialty)
+        VALUES (@name, @specialty)
+        RETURNING Id
+    ";
+    command.Parameters.AddWithValue("@name", employee.Name);
+    command.Parameters.AddWithValue("@specialty", employee.Specialty);
 
-    Customer customer = customers.FirstOrDefault(c => c.Id == serviceTicket.CustomerId);
+    employee.Id = (int)command.ExecuteScalar();
 
-    if (customer == null)
+    return Results.Created($"/employees/{employee.Id}", employee);
+});
+
+//Put endpoints
+app.MapPut("/employees/{id}", (int id, Employee employee) =>
+{
+    if (id != employee.Id)
     {
         return Results.BadRequest();
     }
 
-    serviceTicket.Id = serviceTickets.Max(st => st.Id) + 1;
-    serviceTickets.Add(serviceTicket);
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+        UPDATE Employee 
+        SET Name = @name,
+            Specialty = @specialty
+        WHERE Id = @id
+    ";
+    command.Parameters.AddWithValue("@name", employee.Name);
+    command.Parameters.AddWithValue("@specialty", employee.Specialty);
+    command.Parameters.AddWithValue("@id", id);
 
-    return Results.Created($"/servicetickets/{serviceTicket.Id}", new ServiceTicketDTO
-    {
-        Id = serviceTicket.Id,
-        CustomerId = serviceTicket.CustomerId,
-        Customer = new CustomerDTO
-        {
-            Id = customer.Id,
-            Name = customer.Name,
-            Address = customer.Address
-        },
-        Description = serviceTicket.Description,
-        Emergency = serviceTicket.Emergency
-    });
-
-});
-
-app.MapPost("/servicetickets/{id}/complete", (int id) =>
-{
-    ServiceTicket ticketToComplete = serviceTickets.FirstOrDefault(st => st.Id == id);
-
-    if (ticketToComplete == null)
-    {
-        return Results.NotFound();
-    }
-
-    ticketToComplete.DateCompleted = DateTime.Today;
+    command.ExecuteNonQuery();
 
     return Results.NoContent();
 });
 
 
 
-//Delete Endpoints
-app.MapDelete("/servicetickets/{id}", (int id) =>
+//Delete endpoints
+app.MapDelete("/employees/{id}", (int id) =>
 {
-    var serviceTicket = serviceTickets.FirstOrDefault(st => st.Id == id);
-
-    if (serviceTicket == null)
-    {
-        return Results.NotFound();
-    }
-
-    serviceTickets.Remove(serviceTicket);
-
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+        DELETE FROM Employee WHERE Id = @id
+    ";
+    command.Parameters.AddWithValue("@id", id);
+    command.ExecuteNonQuery();
     return Results.NoContent();
 });
-
-
-//Put Endpoints
-app.MapPut("/servicetickets/{id}", (int id, ServiceTicket serviceTicket) =>
-{
-    ServiceTicket ticketToUpdate = serviceTickets.FirstOrDefault(st => st.Id == id);
-
-    if (ticketToUpdate == null)
-    {
-        return Results.NotFound();
-    }
-    if (id != serviceTicket.Id)
-    {
-        return Results.BadRequest();
-    }
-
-    ticketToUpdate.CustomerId = serviceTicket.CustomerId;
-    ticketToUpdate.EmployeeId = serviceTicket.EmployeeId;
-    ticketToUpdate.Description = serviceTicket.Description;
-    ticketToUpdate.Emergency = serviceTicket.Emergency;
-    ticketToUpdate.DateCompleted = serviceTicket.DateCompleted;
-
-    return Results.NoContent();
-});
-
 
 
 app.Run();
